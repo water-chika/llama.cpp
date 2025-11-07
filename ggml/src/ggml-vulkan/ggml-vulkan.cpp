@@ -248,24 +248,33 @@ enum vk_device_architecture {
     NVIDIA_PRE_TURING,
 };
 
-static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
+static const auto construct_name_to_ext_props(const vk::PhysicalDevice& device) {
+    const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
+    std::unordered_map<std::string_view, vk::ExtensionProperties> name_to_ext_props;
+    for (const auto & properties : ext_props) {
+        name_to_ext_props.emplace(properties.extensionName, properties);
+    }
+    return name_to_ext_props;
+}
+
+static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device,
+    const std::unordered_map<std::string_view, vk::ExtensionProperties>& name_to_ext_props
+) {
     vk::PhysicalDeviceProperties props = device.getProperties();
 
     if (props.vendorID == VK_VENDOR_ID_AMD) {
-        const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
-
         bool amd_shader_core_properties = false;
         bool integer_dot_product = false;
         bool subgroup_size_control = false;
 
-        for (const auto& properties : ext_props) {
-            if (strcmp("VK_AMD_shader_core_properties", properties.extensionName) == 0) {
-                amd_shader_core_properties = true;
-            } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0) {
-                integer_dot_product = true;
-            } else if (strcmp("VK_EXT_subgroup_size_control", properties.extensionName) == 0) {
-                subgroup_size_control = true;
-            }
+        if (name_to_ext_props.count("VK_AMD_shader_core_properties") > 0) {
+            amd_shader_core_properties = true;
+        }
+        if (name_to_ext_props.count("VK_KHR_shader_integer_dot_product") > 0) {
+            integer_dot_product = true;
+        }
+        if (name_to_ext_props.count("VK_EXT_subgroup_size_control") > 0) {
+            subgroup_size_control = true;
         }
 
         if (!amd_shader_core_properties || !integer_dot_product || !subgroup_size_control) {
@@ -301,10 +310,8 @@ static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& 
 
         bool subgroup_size_control = false;
 
-        for (const auto& properties : ext_props) {
-            if (strcmp("VK_EXT_subgroup_size_control", properties.extensionName) == 0) {
-                subgroup_size_control = true;
-            }
+        if (name_to_ext_props.count("VK_EXT_subgroup_size_control") > 0) {
+            subgroup_size_control = true;
         }
 
         if (!subgroup_size_control) {
@@ -330,11 +337,8 @@ static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& 
         bool cooperative_matrix = false;
 
         // Detect "pre-turing" based on lack of coopmat support.
-        for (const auto& properties : ext_props) {
-            if (strcmp("VK_KHR_cooperative_matrix", properties.extensionName) == 0) {
-                cooperative_matrix = true;
-                break;
-            }
+        if (name_to_ext_props.count("VK_KHR_cooperative_matrix") > 0) {
+            cooperative_matrix = true;
         }
 
         if (!cooperative_matrix) {
@@ -342,6 +346,11 @@ static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& 
         }
     }
     return vk_device_architecture::OTHER;
+}
+
+static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
+
+    return get_device_architecture(device, construct_name_to_ext_props(device));
 }
 
 enum vk_conv_shapes {
@@ -3952,9 +3961,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
         }
 
         device->physical_device = physical_devices[dev_num];
-        const std::vector<vk::ExtensionProperties> ext_props = device->physical_device.enumerateDeviceExtensionProperties();
 
-        device->architecture = get_device_architecture(device->physical_device);
+        const auto& name_to_ext_props = construct_name_to_ext_props(device->physical_device);
+
+        device->architecture = get_device_architecture(device->physical_device, name_to_ext_props);
 
         const char* GGML_VK_PREFER_HOST_MEMORY = getenv("GGML_VK_PREFER_HOST_MEMORY");
         device->prefer_host_memory = GGML_VK_PREFER_HOST_MEMORY != nullptr;
@@ -3980,48 +3990,59 @@ static vk_device ggml_vk_get_device(size_t idx) {
         device->integer_dot_product = false;
         bool bfloat16_support = false;
 
-        for (const auto& properties : ext_props) {
-            if (strcmp("VK_KHR_maintenance4", properties.extensionName) == 0) {
+            if (name_to_ext_props.count("VK_KHR_maintenance4") > 0) {
                 maintenance4_support = true;
-            } else if (strcmp("VK_KHR_16bit_storage", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_KHR_16bit_storage") > 0) {
                 fp16_storage = true;
-            } else if (strcmp("VK_KHR_shader_float16_int8", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_KHR_shader_float16_int8") > 0) {
                 fp16_compute = true;
-            } else if (strcmp("VK_NV_shader_sm_builtins", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_NV_shader_sm_builtins") > 0) {
                 sm_builtins = true;
-            } else if (strcmp("VK_AMD_shader_core_properties2", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_AMD_shader_core_properties2") > 0) {
                 amd_shader_core_properties2 = true;
-            } else if (strcmp("VK_EXT_pipeline_robustness", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_EXT_pipeline_robustness") > 0) {
                 pipeline_robustness = true;
-            } else if (strcmp("VK_EXT_subgroup_size_control", properties.extensionName) == 0) {
+            }
+            if (name_to_ext_props.count("VK_EXT_subgroup_size_control") > 0) {
                 device->subgroup_size_control = true;
+
+            }
 #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
-            } else if (strcmp("VK_KHR_cooperative_matrix", properties.extensionName) == 0 &&
+            if (name_to_ext_props.count("VK_KHR_cooperative_matrix") > 0 &&
                        !getenv("GGML_VK_DISABLE_COOPMAT")) {
                 device->coopmat_support = true;
                 device->coopmat_m = 0;
                 device->coopmat_n = 0;
                 device->coopmat_k = 0;
+            }
 #endif
 #if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
-            } else if (strcmp("VK_NV_cooperative_matrix2", properties.extensionName) == 0 &&
+            if (name_to_ext_props.count("VK_NV_cooperative_matrix2") > 0 &&
                        !getenv("GGML_VK_DISABLE_COOPMAT2")) {
                 coopmat2_support = true;
+            }
 #endif
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
-            } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0 &&
+            if (name_to_ext_props.count("VK_KHR_shader_integer_dot_product") > 0 &&
                        !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
                 device->integer_dot_product = true;
+            }
 #endif
 #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
-            } else if (strcmp("VK_KHR_shader_bfloat16", properties.extensionName) == 0 &&
+            if (name_to_ext_props.count("VK_KHR_shader_bfloat16") > 0 &&
                        !getenv("GGML_VK_DISABLE_BFLOAT16")) {
                 bfloat16_support = true;
+            }
 #endif
-            } else if (strcmp("VK_KHR_pipeline_executable_properties", properties.extensionName) == 0) {
+            if (name_to_ext_props.count("VK_KHR_pipeline_executable_properties") > 0) {
                 pipeline_executable_properties_support = true;
             }
-        }
+
 
         vk::PhysicalDeviceProperties2 props2;
         vk::PhysicalDeviceMaintenance3Properties props3;
@@ -4615,7 +4636,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
     return vk_instance.devices[idx];
 }
 
-static void ggml_vk_print_gpu_info(size_t idx) {
+static void ggml_vk_print_gpu_info(size_t idx, std::unordered_map<std::string_view,vk::ExtensionProperties>& name_to_ext_props) {
     GGML_ASSERT(idx < vk_instance.device_indices.size());
     size_t dev_num = vk_instance.device_indices[idx];
     VK_LOG_DEBUG("ggml_vk_print_gpu_info(" << dev_num << ")");
@@ -4629,7 +4650,6 @@ static void ggml_vk_print_gpu_info(size_t idx) {
     }
 
     vk::PhysicalDevice physical_device = devices[dev_num];
-    std::vector<vk::ExtensionProperties> ext_props = physical_device.enumerateDeviceExtensionProperties();
 
     bool fp16_storage = false;
     bool fp16_compute = false;
@@ -4638,33 +4658,36 @@ static void ggml_vk_print_gpu_info(size_t idx) {
     bool integer_dot_product = false;
     bool bfloat16_support = false;
 
-    for (auto properties : ext_props) {
-        if (strcmp("VK_KHR_16bit_storage", properties.extensionName) == 0) {
-            fp16_storage = true;
-        } else if (strcmp("VK_KHR_shader_float16_int8", properties.extensionName) == 0) {
-            fp16_compute = true;
+    if (name_to_ext_props.count("VK_KHR_16bit_storage") > 0) {
+        fp16_storage = true;
+    }
+    if (name_to_ext_props.count("VK_KHR_shader_float16_int8") > 0) {
+        fp16_compute = true;
+    }
 #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
-       } else if (strcmp("VK_KHR_cooperative_matrix", properties.extensionName) == 0 &&
-                   !getenv("GGML_VK_DISABLE_COOPMAT")) {
-            coopmat_support = true;
+    if (name_to_ext_props.count("VK_KHR_cooperative_matrix") > 0 &&
+                !getenv("GGML_VK_DISABLE_COOPMAT")) {
+        coopmat_support = true;
+    }
 #endif
 #if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
-        } else if (strcmp("VK_NV_cooperative_matrix2", properties.extensionName) == 0 &&
-                   !getenv("GGML_VK_DISABLE_COOPMAT2")) {
-            coopmat2_support = true;
+    if (name_to_ext_props.count("VK_NV_cooperative_matrix2") > 0 &&
+                !getenv("GGML_VK_DISABLE_COOPMAT2")) {
+        coopmat2_support = true;
+    }
 #endif
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
-        } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0 &&
-                    !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
-            integer_dot_product = true;
+    if (name_to_ext_props.count("VK_KHR_shader_integer_dot_product") > 0 &&
+                !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
+        integer_dot_product = true;
+    }
 #endif
 #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
-        } else if (strcmp("VK_KHR_shader_bfloat16", properties.extensionName) == 0 &&
-                    !getenv("GGML_VK_DISABLE_BFLOAT16")) {
-            bfloat16_support = true;
-#endif
-        }
+    if (name_to_ext_props.count("VK_KHR_shader_bfloat16") > 0 &&
+                !getenv("GGML_VK_DISABLE_BFLOAT16")) {
+        bfloat16_support = true;
     }
+#endif
 
     const vk_device_architecture device_architecture = get_device_architecture(physical_device);
 
@@ -4995,19 +5018,15 @@ static void ggml_vk_instance_init() {
 
     for (size_t i = 0; i < vk_instance.device_indices.size(); i++) {
         vk::PhysicalDevice vkdev = devices[vk_instance.device_indices[i]];
-        std::vector<vk::ExtensionProperties> extensionprops = vkdev.enumerateDeviceExtensionProperties();
-
+        auto name_to_ext_props = construct_name_to_ext_props(vkdev);
         bool membudget_supported = false;
-        for (const auto & ext : extensionprops) {
-            if (strcmp(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, ext.extensionName) == 0) {
-                membudget_supported = true;
-                break;
-            }
+        if (name_to_ext_props.count(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) > 0) {
+            membudget_supported = true;
         }
 
         vk_instance.device_supports_membudget.push_back(membudget_supported);
 
-        ggml_vk_print_gpu_info(i);
+        ggml_vk_print_gpu_info(i, name_to_ext_props);
     }
 }
 
@@ -13319,15 +13338,12 @@ static std::string ggml_backend_vk_get_device_pci_id(int device_idx) {
 
     vk::PhysicalDevice device = vk_instance.instance.enumeratePhysicalDevices()[vk_instance.device_indices[device_idx]];
 
-    const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
+    auto name_to_ext_props = construct_name_to_ext_props(device);
 
     bool ext_support = false;
 
-    for (const auto& properties : ext_props) {
-        if (strcmp("VK_EXT_pci_bus_info", properties.extensionName) == 0) {
-            ext_support = true;
-            break;
-        }
+    if (name_to_ext_props.count("VK_EXT_pci_bus_info") > 0) {
+        ext_support = true;
     }
 
     if (!ext_support) {
