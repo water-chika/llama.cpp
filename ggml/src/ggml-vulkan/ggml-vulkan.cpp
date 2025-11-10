@@ -5561,7 +5561,14 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context& 
                                 0,
                                 { descriptor_set },
                                 {});
-    subctx->s->buffer.dispatch(wg0, wg1, wg2);
+    if (!std::is_same_v<T, vk_op_im2col_push_constants>) {
+        subctx->s->buffer.dispatchBase(0, 0, 0, wg0, wg1, wg2);
+    }
+    else {
+        for (int wg1_base = 0; wg1_base < wg1; wg1_base+=0x1)
+            subctx->s->buffer.dispatchBase(0, wg1_base, 0, wg0, 0x1, wg2);
+    }
+
 }
 
 static void ggml_vk_end_submission(vk_submission& s, std::vector<vk_semaphore> wait_semaphores, std::vector<vk_semaphore> signal_semaphores) {
