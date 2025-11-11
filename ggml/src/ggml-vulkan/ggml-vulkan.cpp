@@ -250,7 +250,7 @@ enum vk_device_architecture {
 
 static const auto construct_name_to_ext_props(const vk::PhysicalDevice& device) {
     const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
-    std::unordered_map<std::string_view, vk::ExtensionProperties> name_to_ext_props;
+    std::unordered_map<std::string, vk::ExtensionProperties> name_to_ext_props;
     for (const auto & properties : ext_props) {
         name_to_ext_props.emplace(properties.extensionName, properties);
     }
@@ -258,7 +258,7 @@ static const auto construct_name_to_ext_props(const vk::PhysicalDevice& device) 
 }
 
 static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device,
-    const std::unordered_map<std::string_view, vk::ExtensionProperties>& name_to_ext_props
+    const std::unordered_map<std::string, vk::ExtensionProperties>& name_to_ext_props
 ) {
     vk::PhysicalDeviceProperties props = device.getProperties();
 
@@ -4687,7 +4687,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
     return vk_instance.devices[idx];
 }
 
-static void ggml_vk_print_gpu_info(size_t idx, std::unordered_map<std::string_view,vk::ExtensionProperties>& name_to_ext_props) {
+static void ggml_vk_print_gpu_info(size_t idx, std::unordered_map<std::string,vk::ExtensionProperties>& name_to_ext_props) {
     GGML_ASSERT(idx < vk_instance.device_indices.size());
     size_t dev_num = vk_instance.device_indices[idx];
     VK_LOG_DEBUG("ggml_vk_print_gpu_info(" << dev_num << ")");
@@ -5565,7 +5565,7 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context& 
         subctx->s->buffer.dispatchBase(0, 0, 0, wg0, wg1, wg2);
     }
     else {
-        for (int wg1_base = 0; wg1_base < wg1; wg1_base+=0x1)
+        for (uint32_t wg1_base = 0; wg1_base < wg1; wg1_base+=0x1)
             subctx->s->buffer.dispatchBase(0, wg1_base, 0, wg0, 0x1, wg2);
     }
 
