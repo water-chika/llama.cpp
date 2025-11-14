@@ -1078,8 +1078,8 @@ struct json_printer : public printer {
             uint64_t op_flops_per_run = result.flops * result.time_us / 1e6;
             printf("\n,\"flops_per_run\":\"%" PRIu64 "\"", op_flops_per_run);
         } else {
-            printf("\n,\"memory_per_run\":%zu", result.memory_kb);
-            printf("\n,\"bandwidth\":%f", result.bandwidth_gb_s);
+            printf("\n,\"memory_per_run\":%zu", result.memory_kb * 1000);
+            printf("\n,\"bandwidth\":%f", result.bandwidth_gb_s * 1000'000'000);
         }
         printf("\n}");
 
