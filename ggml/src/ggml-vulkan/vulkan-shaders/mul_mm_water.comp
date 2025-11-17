@@ -1,5 +1,7 @@
 #version 450
 
+#extension GL_EXT_control_flow_attributes : enable
+
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout (binding = 0) readonly buffer A {float data_a[];};
@@ -20,9 +22,18 @@ void main() {
     uint m = gl_GlobalInvocationID.x;
     uint n = gl_GlobalInvocationID.y;
 
-    float sum = 0;
-    for (uint k = 0; k < p.K; k++) {
-        sum += data_a[m*p.K + k] * data_b[n*p.K + k];
+    const uint SUM_COUNT = 16;
+    float sum[SUM_COUNT];
+    for (uint i = 0; i < SUM_COUNT; i++) {
+        sum[i] = 0;
     }
-    data_d[n*p.M + m] = sum;
+    for (uint k = 0; k < p.K; k+=SUM_COUNT) {
+        [[unroll]] for (uint i =0; i < SUM_COUNT; i++) {
+            sum[i] = fma(data_a[m*p.K + k+i], data_b[n*p.K + k+i], sum[i]);
+        }
+    }
+    [[unroll]] for (uint i = 1; i < SUM_COUNT; i++) {
+        sum[0] += sum[i];
+    }
+    data_d[n*p.M + m] = sum[0];
 }
