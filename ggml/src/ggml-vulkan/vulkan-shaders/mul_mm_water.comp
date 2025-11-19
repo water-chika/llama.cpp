@@ -18,22 +18,52 @@ layout (push_constant) uniform parameter
     uint stride_d;
 } p;
 
-void main() {
-    uint m = gl_GlobalInvocationID.x;
-    uint n = gl_GlobalInvocationID.y;
+const uint BLOCK_M_SIZE = 4;
+const uint BLOCK_N_SIZE = 4;
+const uint BLOCK_K_SIZE = 4;
 
-    const uint SUM_COUNT = 16;
+shared float buf_a[BLOCK_M_SIZE][BLOCK_K_SIZE];
+shared float buf_b[BLOCK_N_SIZE][BLOCK_K_SIZE];
+
+shared float buf_sum[BLOCK_M_SIZE][BLOCK_N_SIZE][BLOCK_K_SIZE];
+
+void main() {
+    uint m_i = (gl_LocalInvocationID.x) & 3;
+    uint n_i = (gl_LocalInvocationID.x >> 2) & 3;
+    uint k_i = (gl_LocalInvocationID.x >> 4) & 3;
+
+    uint m_b = gl_WorkGroupID.x / (p.N/4);
+    uint n_b = gl_WorkGroupID.x % (p.N/4);
+
+    uint m = m_b*BLOCK_M_SIZE + m_i;
+    uint n = n_b*BLOCK_N_SIZE + n_i;
+
+    const uint SUM_COUNT = 32;
+
     float sum[SUM_COUNT];
     for (uint i = 0; i < SUM_COUNT; i++) {
-        sum[i] = 0;
+        sum[i] = 0.0;
     }
-    for (uint k = 0; k < p.K; k+=SUM_COUNT) {
-        [[unroll]] for (uint i =0; i < SUM_COUNT; i++) {
-            sum[i] = fma(data_a[m*p.K + k+i], data_b[n*p.K + k+i], sum[i]);
+
+    for (uint k_b = 0; k_b < p.K/BLOCK_K_SIZE; k_b+=SUM_COUNT) {
+        for (uint i = 0; i < SUM_COUNT; i++) {
+            uint k = (k_b+i)*BLOCK_K_SIZE + k_i;
+            sum[i] = fma(data_a[m*p.K + k], data_b[n*p.K + k], sum[i]);
         }
     }
-    [[unroll]] for (uint i = 1; i < SUM_COUNT; i++) {
+
+    for (uint i = 1; i < SUM_COUNT; i++) {
         sum[0] += sum[i];
     }
-    data_d[n*p.M + m] = sum[0];
+
+    buf_sum[m_i][n_i][k_i] = sum[0];
+
+    barrier();
+
+    if (k_i == 0) {
+        for (uint k_i = 1; k_i < BLOCK_K_SIZE; k_i++) {
+            sum[0] += buf_sum[m_i][n_i][k_i];
+        }
+        data_d[n*p.M + m] = sum[0];
+    }
 }
