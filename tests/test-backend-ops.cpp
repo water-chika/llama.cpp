@@ -6488,12 +6488,19 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    for (int ks : {32, 64, 128, 256, 512, 1024, 2048, 4096, 1024*8, 1024*16}) {
+    int cu = 12;
+    int simd_per_cu = 32*2;
+    int block_size = 4;
+    for (int ms : { cu*simd_per_cu/block_size }) {
+    for (int ns : { block_size}) {
+    for (int ks : { block_size, block_size*2, block_size*4, block_size*8, block_size*16, block_size*128, block_size*1024}) {
         for (ggml_type type_a : {GGML_TYPE_F32}) {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
-                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 768/4, 4, ks, {1,  1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, ms, ns, ks, {1,  1}, {1, 1}));
             }
         }
+    }
+    }
     }
 }
 
