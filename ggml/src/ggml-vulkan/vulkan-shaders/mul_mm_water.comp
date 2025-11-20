@@ -1,6 +1,9 @@
 #version 450
 
 #extension GL_EXT_control_flow_attributes : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_clustered : enable
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
@@ -18,22 +21,17 @@ layout (push_constant) uniform parameter
     uint stride_d;
 } p;
 
-const uint BLOCK_M_SIZE = 4;
-const uint BLOCK_N_SIZE = 4;
-const uint BLOCK_K_SIZE = 4;
-
-shared float buf_a[BLOCK_M_SIZE][BLOCK_K_SIZE];
-shared float buf_b[BLOCK_N_SIZE][BLOCK_K_SIZE];
-
-shared float buf_sum[BLOCK_M_SIZE][BLOCK_N_SIZE][BLOCK_K_SIZE];
+const uint BLOCK_M_SIZE = 2;
+const uint BLOCK_N_SIZE = 2;
+const uint BLOCK_K_SIZE = 8;
 
 void main() {
-    uint m_i = (gl_LocalInvocationID.x) & 3;
-    uint n_i = (gl_LocalInvocationID.x >> 2) & 3;
-    uint k_i = (gl_LocalInvocationID.x >> 4) & 3;
+    uint k_i = (gl_SubgroupInvocationID) & 7;
+    uint m_i = (gl_SubgroupInvocationID >> 3) & 1;
+    uint n_i = (gl_SubgroupInvocationID >> 4) & 1;
 
-    uint m_b = gl_WorkGroupID.x / (p.N/4);
-    uint n_b = gl_WorkGroupID.x % (p.N/4);
+    uint m_b = gl_WorkGroupID.x / (p.N/2);
+    uint n_b = gl_WorkGroupID.x % (p.N/2);
 
     uint m = m_b*BLOCK_M_SIZE + m_i;
     uint n = n_b*BLOCK_N_SIZE + n_i;
@@ -48,6 +46,8 @@ void main() {
     for (uint k_b = 0; k_b < p.K/BLOCK_K_SIZE; k_b+=SUM_COUNT) {
         for (uint i = 0; i < SUM_COUNT; i++) {
             uint k = (k_b+i)*BLOCK_K_SIZE + k_i;
+            float data_a_m_k = data_a[m*p.K + k];
+            float data_b_n_k = data_b[n*p.K + k];
             sum[i] = fma(data_a[m*p.K + k], data_b[n*p.K + k], sum[i]);
         }
     }
@@ -56,14 +56,11 @@ void main() {
         sum[0] += sum[i];
     }
 
-    buf_sum[m_i][n_i][k_i] = sum[0];
+    subgroupBarrier();
 
-    barrier();
-
+    float d = 0;
+    d = subgroupClusteredAdd(sum[0], 8);
     if (k_i == 0) {
-        for (uint k_i = 1; k_i < BLOCK_K_SIZE; k_i++) {
-            sum[0] += buf_sum[m_i][n_i][k_i];
-        }
-        data_d[n*p.M + m] = sum[0];
+        data_d[n*p.M + m] = d;
     }
 }
