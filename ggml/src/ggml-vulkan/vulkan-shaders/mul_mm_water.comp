@@ -21,20 +21,29 @@ layout (push_constant) uniform parameter
     uint stride_d;
 } p;
 
-const uint BLOCK_M_SIZE = 2;
-const uint BLOCK_N_SIZE = 2;
-const uint BLOCK_K_SIZE = 8;
+const uint BLOCK_M_SIZE = 1;
+const uint BLOCK_N_SIZE = 1;
+const uint BLOCK_K_SIZE = 32;
 
-void main() {
-    uint k_i = (gl_SubgroupInvocationID) & 7;
-    uint m_i = (gl_SubgroupInvocationID >> 3) & 1;
-    uint n_i = (gl_SubgroupInvocationID >> 4) & 1;
+const uint BLOCK_1_K_SIZE = 2;
+const uint BLOCK_1_M_SIZE = 2;
+const uint BLOCK_1_N_SIZE = 2;
+shared float buf_d[BLOCK_1_N_SIZE][BLOCK_1_M_SIZE][BLOCK_M_SIZE][BLOCK_N_SIZE][BLOCK_1_K_SIZE];
 
-    uint m_b = gl_WorkGroupID.x / (p.N/2);
-    uint n_b = gl_WorkGroupID.x % (p.N/2);
+void subgroup_mul() {
+    uint k_i = (gl_SubgroupInvocationID) & (BLOCK_K_SIZE - 1);
+    uint m_i = (gl_SubgroupInvocationID >> 5) & (BLOCK_M_SIZE - 1);
+    uint n_i = (gl_SubgroupInvocationID >> 5) & (BLOCK_N_SIZE - 1);
 
-    uint m = m_b*BLOCK_M_SIZE + m_i;
-    uint n = n_b*BLOCK_N_SIZE + n_i;
+    uint m_b = gl_WorkGroupID.x / (p.N/(BLOCK_N_SIZE*BLOCK_1_N_SIZE));
+    uint n_b = gl_WorkGroupID.x % (p.N/(BLOCK_N_SIZE*BLOCK_1_N_SIZE));
+
+    uint k_1 = (gl_SubgroupID >> 0) & 1;
+    uint m_1 = (gl_SubgroupID >> 1) & 1;
+    uint n_1 = (gl_SubgroupID >> 2) & 1;
+
+    uint m = (m_b*BLOCK_1_M_SIZE + m_1)*BLOCK_M_SIZE + m_i;
+    uint n = (n_b*BLOCK_1_N_SIZE + n_1)*BLOCK_N_SIZE + n_i;
 
     const uint SUM_COUNT = 32;
 
@@ -43,9 +52,9 @@ void main() {
         sum[i] = 0.0;
     }
 
-    for (uint k_b = 0; k_b < p.K/BLOCK_K_SIZE; k_b+=SUM_COUNT) {
+    for (uint k_b = 0; k_b < p.K/(BLOCK_K_SIZE*SUM_COUNT*BLOCK_1_K_SIZE); k_b++) {
         for (uint i = 0; i < SUM_COUNT; i++) {
-            uint k = (k_b+i)*BLOCK_K_SIZE + k_i;
+            uint k = ((k_b*BLOCK_1_K_SIZE+k_1)*SUM_COUNT+i)*BLOCK_K_SIZE + k_i;
             float data_a_m_k = data_a[m*p.K + k];
             float data_b_n_k = data_b[n*p.K + k];
             sum[i] = fma(data_a[m*p.K + k], data_b[n*p.K + k], sum[i]);
@@ -59,8 +68,17 @@ void main() {
     subgroupBarrier();
 
     float d = 0;
-    d = subgroupClusteredAdd(sum[0], 8);
+    d = subgroupClusteredAdd(sum[0], BLOCK_K_SIZE);
     if (k_i == 0) {
-        data_d[n*p.M + m] = d;
+        buf_d[n_1][m_1][m_i][n_i][k_1] = d;
     }
+    barrier();
+
+    if (k_1 == 0) {
+        data_d[n*p.M + m] = buf_d[n_1][m_1][m_i][n_i][0] + buf_d[n_1][m_1][m_i][n_i][1];
+    }
+}
+
+void main() {
+    subgroup_mul();
 }
