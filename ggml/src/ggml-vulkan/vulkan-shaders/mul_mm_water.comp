@@ -4,6 +4,8 @@
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_clustered : enable
+#extension GL_KHR_shader_subgroup_shuffle : enable
+#extension GL_KHR_shader_subgroup_quad : enable
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
@@ -25,7 +27,7 @@ const uint THREAD_M_SIZE = 16;
 const uint THREAD_N_SIZE = 10;
 const uint THREAD_K_SIZE = 16;
 
-float[THREAD_M_SIZE] get_thread_cache_a(uint m_thread_index, uint k_thread_index, uint k) {
+float[THREAD_M_SIZE] get_thread_cache_a(uint m_thread_index, uint n_thread_index, uint k_thread_index, uint k) {
     float thread_cache_a[THREAD_M_SIZE];
     for (uint m = 0; m < THREAD_M_SIZE; m++) {
         thread_cache_a[m] = data_a[(m_thread_index*THREAD_M_SIZE + m)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
@@ -41,19 +43,12 @@ float[THREAD_N_SIZE] get_thread_cache_b(uint n_thread_index, uint k_thread_index
 }
 
 float[THREAD_M_SIZE*THREAD_N_SIZE]
-thread_mul(uint m_thread_index, uint n_thread_index, uint k_thread_index) {
+thread_mul_accu(uint m_thread_index, uint n_thread_index, uint k_thread_index, float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
     float thread_cache_a[THREAD_M_SIZE];
     float thread_cache_b[THREAD_N_SIZE];
-    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
-
-    for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        for (uint m = 0; m < THREAD_M_SIZE; m++) {
-            thread_cache_d[n*THREAD_M_SIZE + m] = 0;
-        }
-    }
 
     for (uint k = 0; k < THREAD_K_SIZE; k++) {
-        thread_cache_a = get_thread_cache_a(m_thread_index, k_thread_index, k);
+        thread_cache_a = get_thread_cache_a(m_thread_index, n_thread_index, k_thread_index, k);
         thread_cache_b = get_thread_cache_b(n_thread_index, k_thread_index, k);
         for (uint n = 0; n < THREAD_N_SIZE; n++) {
             for (uint m = 0; m < THREAD_M_SIZE; m++) {
@@ -72,11 +67,21 @@ void subgroup_mul(uint m_subgroup_index, uint n_subgroup_index) {
     uint m_thread_index = gl_SubgroupInvocationID & 0x7;
     uint n_thread_index = gl_SubgroupInvocationID >> 3;
     uint k_thread_index = 0;
-    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE] =
-        thread_mul(
-            m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index,
-            n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index,
-            k_thread_index);
+    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
+
+    for (uint n = 0; n < THREAD_N_SIZE; n++) {
+        for (uint m = 0; m < THREAD_M_SIZE; m++) {
+            thread_cache_d[n*THREAD_M_SIZE + m] = 0;
+        }
+    }
+    for (uint k = 0; k < SUBGROUP_K_SIZE; k++) {
+        thread_cache_d =
+            thread_mul_accu(
+                m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index,
+                n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index,
+                k_thread_index,
+                thread_cache_d);
+    }
     for (uint n = 0; n < THREAD_N_SIZE; n++) {
         for (uint m = 0; m < THREAD_M_SIZE; m++) {
             data_d[
