@@ -117,9 +117,24 @@ float[THREAD_M_SIZE*THREAD_N_SIZE]
 const uint WORKGROUP_M_SIZE = 2;
 const uint WORKGROUP_N_SIZE = 2;
 const uint WORKGROUP_K_SIZE = 2;
-void workgroup_mul(uint m_workgroup_index, uint n_workgroup_index) {
+float[THREAD_M_SIZE*THREAD_N_SIZE]
+workgroup_mul(uint m_workgroup_index, uint n_workgroup_index, uint k_workgroup_index,
+        float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
     uint m_subgroup_index = gl_SubgroupID & 0x1;
     uint n_subgroup_index = gl_SubgroupID >> 1;
+    for (uint k_subgroup_index = 0; k_subgroup_index < WORKGROUP_K_SIZE; k_subgroup_index++) {
+        thread_cache_d = subgroup_mul(
+                m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index,
+                n_workgroup_index*WORKGROUP_N_SIZE + n_subgroup_index,
+                k_workgroup_index*WORKGROUP_K_SIZE + k_subgroup_index,
+                thread_cache_d);
+    }
+    return thread_cache_d;
+}
+
+void main() {
+    uint m_workgroup_index = gl_WorkGroupID.x;
+    uint n_workgroup_index = gl_WorkGroupID.y;
 
     float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
     for (uint n = 0; n < THREAD_N_SIZE; n++) {
@@ -127,16 +142,16 @@ void workgroup_mul(uint m_workgroup_index, uint n_workgroup_index) {
             thread_cache_d[n*THREAD_M_SIZE + m] = 0;
         }
     }
-    for (uint k_subgroup_index = 0; k_subgroup_index < WORKGROUP_K_SIZE; k_subgroup_index++) {
-        thread_cache_d = subgroup_mul(m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index,
-                n_workgroup_index*WORKGROUP_N_SIZE + n_subgroup_index,
-                k_subgroup_index,
-                thread_cache_d);
+
+    for (uint k_workgroup_index = 0; k_workgroup_index < p.K/(WORKGROUP_K_SIZE*SUBGROUP_K_SIZE*THREAD_K_SIZE); k_workgroup_index++) {
+        thread_cache_d = workgroup_mul(m_workgroup_index, n_workgroup_index, k_workgroup_index, thread_cache_d);
     }
 
     uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
     uint m_thread_index = m_n.x;
     uint n_thread_index = m_n.y;
+    uint m_subgroup_index = gl_SubgroupID & 0x1;
+    uint n_subgroup_index = gl_SubgroupID >> 1;
     for (uint n = 0; n < THREAD_N_SIZE; n++) {
         for (uint m = 0; m < THREAD_M_SIZE; m++) {
             data_d[
@@ -144,10 +159,4 @@ void workgroup_mul(uint m_workgroup_index, uint n_workgroup_index) {
                 ((m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index)*SUBGROUP_M_SIZE*THREAD_M_SIZE + m_thread_index*THREAD_M_SIZE + m)] = thread_cache_d[n*THREAD_M_SIZE + m];
         }
     }
-}
-
-void main() {
-    uint m_workgroup_index = gl_WorkGroupID.x;
-    uint n_workgroup_index = gl_WorkGroupID.y;
-    workgroup_mul(m_workgroup_index, n_workgroup_index);
 }
