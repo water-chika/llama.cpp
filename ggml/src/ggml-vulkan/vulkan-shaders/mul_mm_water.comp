@@ -23,9 +23,9 @@ layout (push_constant) uniform parameter
     uint stride_d;
 } p;
 
-const uint THREAD_M_SIZE = 16;
-const uint THREAD_N_SIZE = 10;
-const uint THREAD_K_SIZE = 16;
+const uint THREAD_M_SIZE = 8;
+const uint THREAD_N_SIZE = 8;
+const uint THREAD_K_SIZE = 8;
 
 float[THREAD_M_SIZE] get_thread_cache_a(uint m_thread_index, uint n_thread_index, uint k_thread_index, uint k) {
     float thread_cache_a[THREAD_M_SIZE];
@@ -34,6 +34,16 @@ float[THREAD_M_SIZE] get_thread_cache_a(uint m_thread_index, uint n_thread_index
     }
     return thread_cache_a;
 }
+float[THREAD_M_SIZE*THREAD_K_SIZE] load_thread_a_block(uint m_thread_index, uint k_thread_index) {
+    float a[THREAD_M_SIZE*THREAD_K_SIZE];
+    for (uint m = 0; m < THREAD_M_SIZE; m++) {
+        for (uint k = 0; k < THREAD_K_SIZE; k++) {
+            a[m*THREAD_K_SIZE + k] = data_a[(m_thread_index*THREAD_M_SIZE + m)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
+
+        }
+    }
+    return a;
+}
 float[THREAD_N_SIZE] get_thread_cache_b(uint n_thread_index, uint k_thread_index, uint k) {
     float thread_cache_b[THREAD_N_SIZE];
     [[unroll]] for (uint n = 0; n < THREAD_N_SIZE; n++) {
@@ -41,18 +51,26 @@ float[THREAD_N_SIZE] get_thread_cache_b(uint n_thread_index, uint k_thread_index
     }
     return thread_cache_b;
 }
+float[THREAD_N_SIZE*THREAD_K_SIZE] load_thread_b_block(uint n_thread_index, uint k_thread_index) {
+    float b[THREAD_N_SIZE*THREAD_K_SIZE];
+    for (uint n = 0; n < THREAD_N_SIZE; n++) {
+        for (uint k = 0; k < THREAD_K_SIZE; k++) {
+            b[n*THREAD_K_SIZE + k] = data_b[(n_thread_index*THREAD_N_SIZE + n)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
+
+        }
+    }
+    return b;
+}
 
 float[THREAD_M_SIZE*THREAD_N_SIZE]
-thread_mul_accu(uint m_thread_index, uint n_thread_index, uint k_thread_index, float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
-    float thread_cache_a[THREAD_M_SIZE];
-    float thread_cache_b[THREAD_N_SIZE];
-
+thread_mul_accu(
+        float a[THREAD_M_SIZE*THREAD_K_SIZE],
+        float b[THREAD_K_SIZE*THREAD_N_SIZE],
+        float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
     for (uint k = 0; k < THREAD_K_SIZE; k++) {
-        thread_cache_a = get_thread_cache_a(m_thread_index, n_thread_index, k_thread_index, k);
-        thread_cache_b = get_thread_cache_b(n_thread_index, k_thread_index, k);
         for (uint n = 0; n < THREAD_N_SIZE; n++) {
             for (uint m = 0; m < THREAD_M_SIZE; m++) {
-                thread_cache_d[n*THREAD_M_SIZE + m] = fma(thread_cache_a[m], thread_cache_b[n], thread_cache_d[n*THREAD_M_SIZE + m]);
+                thread_cache_d[n*THREAD_M_SIZE + m] = fma(a[m*THREAD_K_SIZE + k], b[n*THREAD_K_SIZE + k], thread_cache_d[n*THREAD_M_SIZE + m]);
             }
         }
     }
@@ -61,12 +79,22 @@ thread_mul_accu(uint m_thread_index, uint n_thread_index, uint k_thread_index, f
 
 const uint SUBGROUP_M_SIZE = 8;
 const uint SUBGROUP_N_SIZE = 4;
-const uint SUBGROUP_K_SIZE = 1;
+const uint SUBGROUP_K_SIZE = 8;
+
+uvec2 subgroup_invocation_id_to_m_n(uint id) {
+    uint m_thread_index = id & 0x7;
+    uint n_thread_index = id >> 3;
+    uvec2 m_n = { m_thread_index, n_thread_index };
+    return m_n;
+}
+uint m_n_to_subgroup_invocation_id(uvec2 m_n) {
+    return m_n.x | (m_n.y << 3);
+}
 
 void subgroup_mul(uint m_subgroup_index, uint n_subgroup_index) {
-    uint m_thread_index = gl_SubgroupInvocationID & 0x7;
-    uint n_thread_index = gl_SubgroupInvocationID >> 3;
-    uint k_thread_index = 0;
+    uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
+    uint m_thread_index = m_n.x;
+    uint n_thread_index = m_n.y;
     float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
 
     for (uint n = 0; n < THREAD_N_SIZE; n++) {
@@ -74,12 +102,14 @@ void subgroup_mul(uint m_subgroup_index, uint n_subgroup_index) {
             thread_cache_d[n*THREAD_M_SIZE + m] = 0;
         }
     }
-    for (uint k = 0; k < SUBGROUP_K_SIZE; k++) {
+    for (uint k_thread_index = 0; k_thread_index < SUBGROUP_K_SIZE; k_thread_index++) {
+        float a[THREAD_M_SIZE*THREAD_K_SIZE];
+        float b[THREAD_K_SIZE*THREAD_N_SIZE];
+        a = load_thread_a_block(m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index, k_thread_index);
+        b = load_thread_b_block(n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index, k_thread_index);
         thread_cache_d =
             thread_mul_accu(
-                m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index,
-                n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index,
-                k_thread_index,
+                    a, b,
                 thread_cache_d);
     }
     for (uint n = 0; n < THREAD_N_SIZE; n++) {

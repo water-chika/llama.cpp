@@ -6488,9 +6488,9 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    for (int ms : { 16*8*8}) {
-    for (int ns : { 10*4*10 }) {
-    for (int ks : { 16, 16 }) {
+    for (int ms : { 8*8*8}) {
+    for (int ns : { 8*4*10 }) {
+    for (int ks : { 8*8, 8*8 }) {
         for (ggml_type type_a : {GGML_TYPE_F32}) {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
                 test_cases.emplace_back(new test_mul_mat(type_a, type_b, ms, ns, ks, {1,  1}, {1, 1}));
