@@ -91,38 +91,63 @@ uint m_n_to_subgroup_invocation_id(uvec2 m_n) {
     return m_n.x | (m_n.y << 3);
 }
 
-void subgroup_mul(uint m_subgroup_index, uint n_subgroup_index) {
+float[THREAD_M_SIZE*THREAD_N_SIZE]
+    subgroup_mul(uint m_subgroup_index, uint n_subgroup_index, uint k_subgroup_index,
+            float[THREAD_M_SIZE*THREAD_N_SIZE] thread_cache_d) {
     uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
     uint m_thread_index = m_n.x;
     uint n_thread_index = m_n.y;
-    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
-
-    for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        for (uint m = 0; m < THREAD_M_SIZE; m++) {
-            thread_cache_d[n*THREAD_M_SIZE + m] = 0;
-        }
-    }
     for (uint k_thread_index = 0; k_thread_index < SUBGROUP_K_SIZE; k_thread_index++) {
         float a[THREAD_M_SIZE*THREAD_K_SIZE];
         float b[THREAD_K_SIZE*THREAD_N_SIZE];
-        a = load_thread_a_block(m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index, k_thread_index);
-        b = load_thread_b_block(n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index, k_thread_index);
+        a = load_thread_a_block(
+                m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index,
+                k_subgroup_index*SUBGROUP_K_SIZE + k_thread_index);
+        b = load_thread_b_block(
+                n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index,
+                k_subgroup_index*SUBGROUP_K_SIZE + k_thread_index);
         thread_cache_d =
             thread_mul_accu(
                     a, b,
                 thread_cache_d);
     }
+    return thread_cache_d;
+}
+
+const uint WORKGROUP_M_SIZE = 2;
+const uint WORKGROUP_N_SIZE = 2;
+const uint WORKGROUP_K_SIZE = 2;
+void workgroup_mul(uint m_workgroup_index, uint n_workgroup_index) {
+    uint m_subgroup_index = gl_SubgroupID & 0x1;
+    uint n_subgroup_index = gl_SubgroupID >> 1;
+
+    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
+    for (uint n = 0; n < THREAD_N_SIZE; n++) {
+        for (uint m = 0; m < THREAD_M_SIZE; m++) {
+            thread_cache_d[n*THREAD_M_SIZE + m] = 0;
+        }
+    }
+    for (uint k_subgroup_index = 0; k_subgroup_index < WORKGROUP_K_SIZE; k_subgroup_index++) {
+        thread_cache_d = subgroup_mul(m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index,
+                n_workgroup_index*WORKGROUP_N_SIZE + n_subgroup_index,
+                k_subgroup_index,
+                thread_cache_d);
+    }
+
+    uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
+    uint m_thread_index = m_n.x;
+    uint n_thread_index = m_n.y;
     for (uint n = 0; n < THREAD_N_SIZE; n++) {
         for (uint m = 0; m < THREAD_M_SIZE; m++) {
             data_d[
-                (n_subgroup_index*SUBGROUP_N_SIZE*THREAD_N_SIZE + n_thread_index*THREAD_N_SIZE + n)*p.M +
-                (m_subgroup_index*SUBGROUP_M_SIZE*THREAD_M_SIZE + m_thread_index*THREAD_M_SIZE + m)] = thread_cache_d[n*THREAD_M_SIZE + m];
+                ((n_workgroup_index*WORKGROUP_N_SIZE+n_subgroup_index)*SUBGROUP_N_SIZE*THREAD_N_SIZE + n_thread_index*THREAD_N_SIZE + n)*p.M +
+                ((m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index)*SUBGROUP_M_SIZE*THREAD_M_SIZE + m_thread_index*THREAD_M_SIZE + m)] = thread_cache_d[n*THREAD_M_SIZE + m];
         }
     }
 }
 
 void main() {
-    uint m_subgroup_index = gl_WorkGroupID.x;
-    uint n_subgroup_index = gl_WorkGroupID.y;
-    subgroup_mul(m_subgroup_index, n_subgroup_index);
+    uint m_workgroup_index = gl_WorkGroupID.x;
+    uint n_workgroup_index = gl_WorkGroupID.y;
+    workgroup_mul(m_workgroup_index, n_workgroup_index);
 }
