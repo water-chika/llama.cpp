@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 
 #include "mul_mat_vec_base.glsl"
 
@@ -11,20 +12,40 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint ib32, 
     const uint y_idx = i * QUANT_K + 32 * ib32;
 
     uint ibi = a_offset / QUANT_K + first_row * num_blocks_per_row + i;
+
+    float16_t cache_a_d[NUM_ROWS];
+    uint cache_a_qh[NUM_ROWS];
+    uint cache_a_qs[NUM_ROWS][4];
+    vec4 cache_b_v4[NUM_COLS*4*2];
+    for (uint n = 0; n < num_rows; ++n) {
+        cache_a_d[n] = data_a[ibi + n*num_blocks_per_row].d;
+        cache_a_qh[n] = data_a[ibi + n*num_blocks_per_row].qh[ib32];
+        for (uint l = 0; l < 4; ++l) {
+            cache_a_qs[n][l] = data_a[ibi + n*num_blocks_per_row].qs[4*ib32 + l];
+        }
+    }
+    for (uint l = 0; l < 4; ++l) {
+        for (uint j = 0; j < NUM_COLS; ++j) {
+            vec4 b0 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 0]);
+            vec4 b4 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 1]);
+            cache_b_v4[j*4*2 + l*2 + 0] = b0;
+            cache_b_v4[j*4*2 + l*2 + 1] = b4;
+        }
+    }
     [[unroll]] for (uint n = 0; n < num_rows; ++n) {
-        const float d = float(data_a[ibi].d);
-        const uint qh = data_a[ibi].qh[ib32];
+        const float d = float(cache_a_d[n]);
+        const uint qh = cache_a_qh[n];
         const float dl = d * float(2 * bitfieldExtract(qh, 12, 3) + 1);
         const float delta = ((qh & 0x8000) != 0) ? -IQ1S_DELTA : IQ1S_DELTA;
 
         [[unroll]] for (uint l = 0; l < 4; ++l) {
-            const uint qs = data_a[ibi].qs[4 * ib32 + l];
+            const uint qs = cache_a_qs[n][l];
             const uint idxhi = bitfieldExtract(qh, 3 * int(l), 3);
             const int16_t grid = int16_t(iq1s_grid[qs | (idxhi << 8)]);
 
             [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
-                vec4 b0 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 0]);
-                vec4 b4 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 1]);
+                vec4 b0 = vec4(cache_b_v4[j*4*2 + l*2 + 0]);
+                vec4 b4 = vec4(cache_b_v4[j*4*2 + 2*l + 1]);
 
                 FLOAT_TYPE sum = FLOAT_TYPE(0.0);
                 [[unroll]] for (int k = 0; k < 4; ++k) {
@@ -45,10 +66,10 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
     const uint num_blocks_per_row = p.ncols / QUANT_K;
 
     // 8 threads are used to process each block
-    const uint blocks_per_wg = gl_WorkGroupSize.x/2;
+    const uint blocks_per_wg = gl_WorkGroupSize.x/8;
     const uint tid = gl_LocalInvocationID.x;
-    const uint itid = tid % 2;  // 0...7
-    const uint ix = tid / 2;
+    const uint itid = tid % 8;  // 0...7
+    const uint ix = tid / 8;
 
     [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
         [[unroll]] for (uint i = 0; i < NUM_ROWS; ++i) {

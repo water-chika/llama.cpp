@@ -39,7 +39,83 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <iostream>
+#include <print>
 
+static void init_tensor_with_index(ggml_tensor * tensor) {
+    size_t nels = ggml_nelements(tensor);
+    std::vector<float> data(nels);
+    {
+        // parallel initialization
+        static const size_t n_threads = std::thread::hardware_concurrency();
+
+        auto init_thread = [&](size_t ith, size_t start, size_t end) {
+            for (size_t i = start; i < end; i++) {
+                data[i] = i;
+            }
+        };
+
+        std::vector<std::future<void>> tasks;
+        tasks.reserve(n_threads);
+        for (size_t i = 0; i < n_threads; i++) {
+            size_t start =     i*nels/n_threads;
+            size_t end   = (i+1)*nels/n_threads;
+            tasks.push_back(std::async(std::launch::async, init_thread, i, start, end));
+        }
+        for (auto & t : tasks) {
+            t.get();
+        }
+    }
+
+    if (tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_I32) {
+        ggml_backend_tensor_set(tensor, data.data(), 0, nels * sizeof(float));
+    } else if (ggml_is_quantized(tensor->type) || tensor->type == GGML_TYPE_F16 || tensor->type == GGML_TYPE_BF16) {
+        GGML_ASSERT(nels % ggml_blck_size(tensor->type) == 0);
+
+         // dummy importance matrix
+        std::vector<float> imatrix(tensor->ne[0], 1.0f);
+        const float * im = imatrix.data();
+        if (!ggml_quantize_requires_imatrix(tensor->type)) {
+        }
+
+        std::vector<uint8_t> dataq(ggml_row_size(tensor->type, nels));
+        {
+            // parallel quantization by block
+            size_t blck_size = ggml_blck_size(tensor->type);
+            size_t n_blocks = nels / blck_size;
+
+            auto quantize_thread = [&](size_t start, size_t end) {
+                ggml_quantize_chunk(tensor->type, data.data(), dataq.data(),
+                    start * blck_size, end - start, blck_size, im);
+            };
+
+            const size_t min_blocks_per_thread = 1;
+            const size_t n_threads = std::min<size_t>(std::thread::hardware_concurrency()/2,
+                                                      std::max<size_t>(1, n_blocks / min_blocks_per_thread));
+            std::vector<std::future<void>> tasks;
+            tasks.reserve(n_threads);
+            for (size_t i = 0; i < n_threads; i++) {
+                size_t start =     i*n_blocks/n_threads;
+                size_t end   = (i+1)*n_blocks/n_threads;
+                tasks.push_back(std::async(std::launch::async, quantize_thread, start, end));
+            }
+            for (auto & t : tasks) {
+                t.get();
+            }
+        }
+        ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
+    } else if (tensor->type == GGML_TYPE_I8 || tensor->type == GGML_TYPE_I16 || tensor->type == GGML_TYPE_I32) {
+        // This is going to create some weird integers though.
+        ggml_backend_tensor_set(tensor, data.data(), 0, ggml_nbytes(tensor));
+    } else if (tensor->type == GGML_TYPE_I64) {
+        // Integers with a size of 8 bytes can be set by mirroring the float data, the specific values are again not really meaningful.
+        const size_t nbytes_half = ggml_nbytes(tensor)/2;
+        ggml_backend_tensor_set(tensor, data.data(), 0*nbytes_half, nbytes_half);
+        ggml_backend_tensor_set(tensor, data.data(), 1*nbytes_half, nbytes_half);
+    } else {
+        GGML_ABORT("fatal error");
+    }
+}
 static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float max = 1.0f) {
     size_t nels = ggml_nelements(tensor);
     std::vector<float> data(nels);
@@ -1498,6 +1574,16 @@ struct test_case {
 
             double err = nmse(f1.data(), f2.data(), f1.size());
             if (err > ud->max_err) {
+                if (true) {
+                    for (uint32_t i = 0; i < f1.size(); i++) {
+                        std::print("{} ", f1[i]);
+                    }
+                    std::cout << std::endl;
+                    for (uint32_t i = 0; i < f2.size(); i++) {
+                        std::print("{} ", f2[i]);
+                    }
+                    std::cout << std::endl;
+                }
                 printf("[%s] NMSE = %.9f > %.9f ", ggml_op_desc(t1), err, ud->max_err);
                 //for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
@@ -6488,10 +6574,10 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    for (int ms : { 8*8*2*5, 8*8*2*10}) {
-    for (int ns : { 8*4*2*4, 8*4*2*8, 8*4*2*16 }) {
-    for (int ks : { 8*8*2, 8*8*2, 8*8*2*2, 8*8*2*3, 8*8*2*4, 8*8*2*6, 8*8*2*8 }) {
-        for (ggml_type type_a : {GGML_TYPE_F32}) {
+    for (int ms : { 32, 1024, 4096}) {
+    for (int ns : { 8}) {
+    for (int ks : { 256, 256, 256*2, 256*4, 14336}) {
+        for (ggml_type type_a : {GGML_TYPE_IQ1_S}) {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
                 test_cases.emplace_back(new test_mul_mat(type_a, type_b, ms, ns, ks, {1,  1}, {1, 1}));
             }

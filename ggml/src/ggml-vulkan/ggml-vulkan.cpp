@@ -2873,7 +2873,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
     ggml_vk_create_pipeline(device, device->pipeline_mat_mul_water,
             "mat_mul_water", mat_mul_water_len, mat_mul_water_data,
-            "main", 3, sizeof(vk_mat_mat_push_constants), {8*8*2, 8*4*2, 1}, {8*4*2*2, 1, 1}, 1);
+            "main", 3, sizeof(vk_mat_mat_push_constants), {32, 1, 1}, {32, 1, 1}, 1);
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
     if (device->coopmat2) {
 
@@ -6307,7 +6307,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     std::cerr << "), (" << dst << ", name=" << dst->name << ", type=" << ggml_type_name(dst->type) << ", ne0=" << dst->ne[0] << ", ne1=" << dst->ne[1] << ", ne2=" << dst->ne[2] << ", ne3=" << dst->ne[3] << ", nb0=" << dst->nb[0] << ", nb1=" << dst->nb[1] << ", nb2=" << dst->nb[2] << ", nb3=" << dst->nb[3];
     std::cerr << "))");
     GGML_ASSERT(ggml_vk_dim01_contiguous(src0));
-    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    //GGML_ASSERT(src0->type == GGML_TYPE_F32);
     GGML_ASSERT(ggml_vk_dim01_contiguous(src1));
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 

@@ -6,10 +6,14 @@
 #extension GL_KHR_shader_subgroup_clustered : enable
 #extension GL_KHR_shader_subgroup_shuffle : enable
 #extension GL_KHR_shader_subgroup_quad : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) readonly buffer A {float data_a[];};
+#define DATA_A_IQ1_S
+#include "types.glsl"
+
+layout (binding = 0) readonly buffer A {block_iq1_s data_a[];};
 layout (binding = 1) readonly buffer B {float data_b[];};
 layout (binding = 2) writeonly buffer D {float data_d[];};
 
@@ -23,140 +27,59 @@ layout (push_constant) uniform parameter
     uint stride_d;
 } p;
 
-const uint THREAD_M_SIZE = 8;
-const uint THREAD_N_SIZE = 8;
-const uint THREAD_K_SIZE = 8;
+const uint QK_K = 256;
 
-float[THREAD_M_SIZE] get_thread_cache_a(uint m_thread_index, uint n_thread_index, uint k_thread_index, uint k) {
-    float thread_cache_a[THREAD_M_SIZE];
-    for (uint m = 0; m < THREAD_M_SIZE; m++) {
-        thread_cache_a[m] = data_a[(m_thread_index*THREAD_M_SIZE + m)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
-    }
-    return thread_cache_a;
-}
-float[THREAD_M_SIZE*THREAD_K_SIZE] load_thread_a_block(uint m_thread_index, uint k_thread_index) {
-    float a[THREAD_M_SIZE*THREAD_K_SIZE];
-    for (uint m = 0; m < THREAD_M_SIZE; m++) {
-        for (uint k = 0; k < THREAD_K_SIZE; k++) {
-            a[m*THREAD_K_SIZE + k] = data_a[(m_thread_index*THREAD_M_SIZE + m)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
+float[256] dequantize_row_iq1_s(const block_iq1_s x) {
+    float y[256];
+    const int64_t nb = 256 / QK_K;
 
-        }
-    }
-    return a;
-}
-float[THREAD_N_SIZE] get_thread_cache_b(uint n_thread_index, uint k_thread_index, uint k) {
-    float thread_cache_b[THREAD_N_SIZE];
-    [[unroll]] for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        thread_cache_b[n] = data_b[(n_thread_index*THREAD_N_SIZE + n)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
-    }
-    return thread_cache_b;
-}
-float[THREAD_N_SIZE*THREAD_K_SIZE] load_thread_b_block(uint n_thread_index, uint k_thread_index) {
-    float b[THREAD_N_SIZE*THREAD_K_SIZE];
-    for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        for (uint k = 0; k < THREAD_K_SIZE; k++) {
-            b[n*THREAD_K_SIZE + k] = data_b[(n_thread_index*THREAD_N_SIZE + n)*p.K + (k_thread_index*THREAD_K_SIZE+k)];
+    const float d = x.d;
+    const uint8_t qs[QK_K/8] = x.qs;
+    const uint16_t qh[QK_K/32] = x.qh;
 
-        }
-    }
-    return b;
-}
-
-float[THREAD_M_SIZE*THREAD_N_SIZE]
-thread_mul_accu(
-        float a[THREAD_M_SIZE*THREAD_K_SIZE],
-        float b[THREAD_K_SIZE*THREAD_N_SIZE],
-        float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
-    for (uint k = 0; k < THREAD_K_SIZE; k++) {
-        for (uint n = 0; n < THREAD_N_SIZE; n++) {
-            for (uint m = 0; m < THREAD_M_SIZE; m++) {
-                thread_cache_d[n*THREAD_M_SIZE + m] = fma(a[m*THREAD_K_SIZE + k], b[n*THREAD_K_SIZE + k], thread_cache_d[n*THREAD_M_SIZE + m]);
+    for (int ib = 0; ib < QK_K/32; ++ib) {
+        const float dl = d * (2*((qh[ib] >> 12) & 7) + 1);
+        const float delta = (qh[ib] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
+        for (int l = 0; l < 4; ++l) {
+            const uint16_t grid = iq1s_grid[(qs[ib*4 + l] | (((qh[ib] >> 3*l) & 7) << 8))];
+            for (int j = 0; j < 8; ++j) {
+                y[ib*32 + l*8 + j] = dl * (bitfieldExtract(grid, 2*j, 2) + delta);
             }
         }
     }
-    return thread_cache_d;
+    return y;
 }
 
-const uint SUBGROUP_M_SIZE = 8;
-const uint SUBGROUP_N_SIZE = 4;
-const uint SUBGROUP_K_SIZE = 8;
+float mul_iq1_s_data_b(const block_iq1_s x, uint k_b, uint n, float sum) {
+    const float d = x.d;
+    const uint8_t qs[QK_K/8] = x.qs;
+    const uint16_t qh[QK_K/32] = x.qh;
 
-uvec2 subgroup_invocation_id_to_m_n(uint id) {
-    uint m_thread_index = id & 0x7;
-    uint n_thread_index = id >> 3;
-    uvec2 m_n = { m_thread_index, n_thread_index };
-    return m_n;
-}
-uint m_n_to_subgroup_invocation_id(uvec2 m_n) {
-    return m_n.x | (m_n.y << 3);
-}
+    for (int ib = 0; ib < QK_K/32; ++ib) {
+        const float dl = d * (2*((qh[ib] >> 12) & 7) + 1);
+        const float delta = (qh[ib] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
 
-float[THREAD_M_SIZE*THREAD_N_SIZE]
-    subgroup_mul(uint m_subgroup_index, uint n_subgroup_index, uint k_subgroup_index,
-            float[THREAD_M_SIZE*THREAD_N_SIZE] thread_cache_d) {
-    uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
-    uint m_thread_index = m_n.x;
-    uint n_thread_index = m_n.y;
-    for (uint k_thread_index = 0; k_thread_index < SUBGROUP_K_SIZE; k_thread_index++) {
-        float a[THREAD_M_SIZE*THREAD_K_SIZE];
-        float b[THREAD_K_SIZE*THREAD_N_SIZE];
-        a = load_thread_a_block(
-                m_subgroup_index*SUBGROUP_M_SIZE + m_thread_index,
-                k_subgroup_index*SUBGROUP_K_SIZE + k_thread_index);
-        b = load_thread_b_block(
-                n_subgroup_index*SUBGROUP_N_SIZE + n_thread_index,
-                k_subgroup_index*SUBGROUP_K_SIZE + k_thread_index);
-        thread_cache_d =
-            thread_mul_accu(
-                    a, b,
-                thread_cache_d);
+        float temp = 0;
+        for (int l = 0; l < 4; ++l) {
+            const uint16_t grid = iq1s_grid[(qs[ib*4 + l] | (((qh[ib] >> 3*l) & 7) << 8))];
+            for (int j = 0; j < 8; ++j) {
+                temp = fma(data_b[n*p.K + (k_b*QK_K+ib*32+l*8+j)],bitfieldExtract(grid, 2*j, 2) + delta, temp);
+            }
+        }
+        sum = fma(dl, temp, sum);
     }
-    return thread_cache_d;
-}
-
-const uint WORKGROUP_M_SIZE = 2;
-const uint WORKGROUP_N_SIZE = 2;
-const uint WORKGROUP_K_SIZE = 2;
-float[THREAD_M_SIZE*THREAD_N_SIZE]
-workgroup_mul(uint m_workgroup_index, uint n_workgroup_index, uint k_workgroup_index,
-        float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE]) {
-    uint m_subgroup_index = gl_SubgroupID & 0x1;
-    uint n_subgroup_index = gl_SubgroupID >> 1;
-    for (uint k_subgroup_index = 0; k_subgroup_index < WORKGROUP_K_SIZE; k_subgroup_index++) {
-        thread_cache_d = subgroup_mul(
-                m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index,
-                n_workgroup_index*WORKGROUP_N_SIZE + n_subgroup_index,
-                k_workgroup_index*WORKGROUP_K_SIZE + k_subgroup_index,
-                thread_cache_d);
-    }
-    return thread_cache_d;
+    return sum;
 }
 
 void main() {
-    uint m_workgroup_index = gl_WorkGroupID.x;
-    uint n_workgroup_index = gl_WorkGroupID.y;
+    init_iq_shmem(gl_WorkGroupSize);
 
-    float thread_cache_d[THREAD_M_SIZE*THREAD_N_SIZE];
-    for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        for (uint m = 0; m < THREAD_M_SIZE; m++) {
-            thread_cache_d[n*THREAD_M_SIZE + m] = 0;
-        }
-    }
+    uint m = gl_GlobalInvocationID.x;
+    uint n = gl_GlobalInvocationID.y;
 
-    for (uint k_workgroup_index = 0; k_workgroup_index < p.K/(WORKGROUP_K_SIZE*SUBGROUP_K_SIZE*THREAD_K_SIZE); k_workgroup_index++) {
-        thread_cache_d = workgroup_mul(m_workgroup_index, n_workgroup_index, k_workgroup_index, thread_cache_d);
+    float sum = 0;
+    for (uint k_b = 0; k_b < p.K/QK_K; k_b++) {
+        sum = mul_iq1_s_data_b(data_a[m * (p.K/QK_K) +k_b], k_b, n, sum);
     }
-
-    uvec2 m_n = subgroup_invocation_id_to_m_n(gl_SubgroupInvocationID);
-    uint m_thread_index = m_n.x;
-    uint n_thread_index = m_n.y;
-    uint m_subgroup_index = gl_SubgroupID & 0x1;
-    uint n_subgroup_index = gl_SubgroupID >> 1;
-    for (uint n = 0; n < THREAD_N_SIZE; n++) {
-        for (uint m = 0; m < THREAD_M_SIZE; m++) {
-            data_d[
-                ((n_workgroup_index*WORKGROUP_N_SIZE+n_subgroup_index)*SUBGROUP_N_SIZE*THREAD_N_SIZE + n_thread_index*THREAD_N_SIZE + n)*p.M +
-                ((m_workgroup_index*WORKGROUP_M_SIZE + m_subgroup_index)*SUBGROUP_M_SIZE*THREAD_M_SIZE + m_thread_index*THREAD_M_SIZE + m)] = thread_cache_d[n*THREAD_M_SIZE + m];
-        }
-    }
+    data_d[n*p.M + m] = sum;
 }
