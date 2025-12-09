@@ -50,36 +50,80 @@ float[256] dequantize_row_iq1_s(const block_iq1_s x) {
     return y;
 }
 
-float mul_iq1_s_data_b(const block_iq1_s x, uint k_b, uint n, float sum) {
-    const float d = x.d;
-    const uint8_t qs[QK_K/8] = x.qs;
-    const uint16_t qh[QK_K/32] = x.qh;
+const uint THREAD_N_SIZE = 2;
+const uint THREAD_M_SIZE = 2;
+const uint ITER_K_SIZE = QK_K/4;
 
-    for (int ib = 0; ib < QK_K/32; ++ib) {
-        const float dl = d * (2*((qh[ib] >> 12) & 7) + 1);
-        const float delta = (qh[ib] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
+float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_b, uint n_thread_index, float sums[THREAD_N_SIZE*THREAD_M_SIZE]) {
+    uint a_indices[THREAD_M_SIZE];
+    float ds[THREAD_M_SIZE];
+    for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+	uint m = m_thread_index*THREAD_M_SIZE + m_i;
+	a_indices[m_i] = m * (p.K/QK_K) + k_b*ITER_K_SIZE/QK_K;
+        ds[m_i] = data_a[a_indices[m_i]].d;
+    }
 
-        float temp = 0;
+    uint start_ib = (k_b*ITER_K_SIZE%QK_K)/32;
+    uint end_ib = start_ib + (ITER_K_SIZE%QK_K)/32;
+    for (uint ib = start_ib; ib < end_ib; ++ib) {
+	uint16_t qhs[THREAD_M_SIZE];
+        float dls[THREAD_M_SIZE];
+        float delta[THREAD_M_SIZE];
+	for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+	    qhs[m_i] = data_a[a_indices[m_i]].qh[ib];
+            dls[m_i] = ds[m_i] * (2*((qhs[m_i] >> 12) & 7) + 1);
+            delta[m_i] = (qhs[m_i] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
+	}
+
         for (int l = 0; l < 4; ++l) {
-            const uint16_t grid = iq1s_grid[(qs[ib*4 + l] | (((qh[ib] >> 3*l) & 7) << 8))];
+	    uint8_t qss[THREAD_M_SIZE];
+	    uint16_t grids[THREAD_M_SIZE];
+            for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+		qss[m_i] = data_a[a_indices[m_i]].qs[ib*4+l];
+                grids[m_i] = iq1s_grid[qss[m_i] | (((qhs[m_i] >> 3*l) & 7) << 8)];
+	    }
             for (int j = 0; j < 8; ++j) {
-                temp = fma(data_b[n*p.K + (k_b*QK_K+ib*32+l*8+j)],bitfieldExtract(grid, 2*j, 2) + delta, temp);
+		float cache_b[THREAD_N_SIZE];
+		for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+		    uint n = n_thread_index*THREAD_N_SIZE + n_i;
+		    cache_b[n_i] = data_b[n*p.K + (k_b*ITER_K_SIZE/QK_K*QK_K+ib*32+l*8+j)];
+		}
+		float cache_a[THREAD_M_SIZE];
+		for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+		    cache_a[m_i] = (bitfieldExtract(grids[m_i], 2*j, 2) + delta[m_i])*dls[m_i];
+		}
+		for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                    for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+		        uint n = n_thread_index*THREAD_N_SIZE + n_i;
+		        float a = cache_a[m_i];
+			float b = cache_b[n_i];
+			sums[n_i*THREAD_M_SIZE + m_i] = fma(a, b, sums[n_i*THREAD_M_SIZE + m_i]);
+		    }
+		}
             }
         }
-        sum = fma(dl, temp, sum);
     }
-    return sum;
+    return sums;
 }
 
 void main() {
     init_iq_shmem(gl_WorkGroupSize);
 
-    uint m = gl_GlobalInvocationID.x;
-    uint n = gl_GlobalInvocationID.y;
+    uint m_thread_index = gl_GlobalInvocationID.x;
+    uint n_thread_index = gl_GlobalInvocationID.y;
 
-    float sum = 0;
-    for (uint k_b = 0; k_b < p.K/QK_K; k_b++) {
-        sum = mul_iq1_s_data_b(data_a[m * (p.K/QK_K) +k_b], k_b, n, sum);
+    float sums[THREAD_N_SIZE*THREAD_M_SIZE];
+    for (uint i = 0; i < THREAD_N_SIZE*THREAD_M_SIZE; i++) {
+	    sums[i] = 0;
     }
-    data_d[n*p.M + m] = sum;
+    for (uint k_b = 0; k_b < p.K/ITER_K_SIZE; k_b++) {
+        sums = mul_iq1_s_data_b(m_thread_index, k_b, n_thread_index, sums);
+    }
+    for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+	for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+	    uint n = n_thread_index*THREAD_N_SIZE + n_i;
+	    uint m = m_thread_index*THREAD_M_SIZE + m_i;
+	    data_d[n*p.M + m] = sums[n_i*THREAD_M_SIZE + m_i];
+	}
+    }
 }
