@@ -6574,9 +6574,12 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    for (int ms : { 4, 4*32, 1024, 4096}) {
-    for (int ns : { 4, 8}) {
-    for (int ks : { 256, 256, 256*2, 256*4, 14336}) {
+    constexpr int thread_m = 4;
+    constexpr int thread_n = 4;
+    constexpr int iter_k = 256/8;
+    for (int ms : { thread_m, thread_m*2*8, thread_m*2*32, 4096}) {
+    for (int ns : { thread_n, 8}) {
+    for (int ks : { iter_k*32, iter_k*32, iter_k*32*2, iter_k*32*4, 14336}) {
         for (ggml_type type_a : {GGML_TYPE_IQ1_S}) {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
                 test_cases.emplace_back(new test_mul_mat(type_a, type_b, ms, ns, ks, {1,  1}, {1, 1}));

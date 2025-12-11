@@ -52,7 +52,7 @@ float[256] dequantize_row_iq1_s(const block_iq1_s x) {
 
 const uint THREAD_N_SIZE = 4;
 const uint THREAD_M_SIZE = 4;
-const uint ITER_K_SIZE = QK_K/4;
+const uint ITER_K_SIZE = QK_K/8;
 
 float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_b, uint n_thread_index, float sums[THREAD_N_SIZE*THREAD_M_SIZE]) {
     uint a_indices[THREAD_M_SIZE];
