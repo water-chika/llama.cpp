@@ -106,24 +106,28 @@ float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_
     return sums;
 }
 
+
+const uint SUBGROUP_K_SIZE = 32;
+
 void main() {
     init_iq_shmem(gl_WorkGroupSize);
 
-    uint m_thread_index = gl_GlobalInvocationID.x;
-    uint n_thread_index = gl_GlobalInvocationID.y;
+    uint m_thread_index = gl_WorkGroupID.x;
+    uint n_thread_index = gl_WorkGroupID.y;
 
     float sums[THREAD_N_SIZE*THREAD_M_SIZE];
     for (uint i = 0; i < THREAD_N_SIZE*THREAD_M_SIZE; i++) {
             sums[i] = 0;
     }
-    for (uint k_b = 0; k_b < p.K/ITER_K_SIZE; k_b++) {
+    for (uint k_b = gl_SubgroupInvocationID; k_b < p.K/ITER_K_SIZE; k_b+=SUBGROUP_K_SIZE) {
         sums = mul_iq1_s_data_b(m_thread_index, k_b, n_thread_index, sums);
     }
+
     for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
         for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
             uint n = n_thread_index*THREAD_N_SIZE + n_i;
             uint m = m_thread_index*THREAD_M_SIZE + m_i;
-            data_d[n*p.M + m] = sums[n_i*THREAD_M_SIZE + m_i];
+            data_d[n*p.M + m] = subgroupAdd(sums[n_i*THREAD_M_SIZE + m_i]);
         }
     }
 }

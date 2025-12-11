@@ -2873,7 +2873,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
     ggml_vk_create_pipeline(device, device->pipeline_mat_mul_water,
             "mat_mul_water", mat_mul_water_len, mat_mul_water_data,
-            "main", 3, sizeof(vk_mat_mat_push_constants), {4*32, 4, 1}, {32, 1, 1}, 1);
+            "main", 3, sizeof(vk_mat_mat_push_constants), {4, 4, 1}, {32, 1, 1}, 1);
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
     if (device->coopmat2) {
 
