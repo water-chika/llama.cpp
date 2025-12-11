@@ -6574,7 +6574,7 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    for (int ms : { 32*2, 1024, 4096}) {
+    for (int ms : { 4*32, 1024, 4096}) {
     for (int ns : { 8}) {
     for (int ks : { 256, 256, 256*2, 256*4, 14336}) {
         for (ggml_type type_a : {GGML_TYPE_IQ1_S}) {
