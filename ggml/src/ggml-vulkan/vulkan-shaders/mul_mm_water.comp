@@ -52,7 +52,7 @@ float[256] dequantize_row_iq1_s(const block_iq1_s x) {
 
 const uint THREAD_N_SIZE = 4;
 const uint THREAD_M_SIZE = 4;
-const uint ITER_K_SIZE = QK_K/8;
+const uint ITER_K_SIZE = QK_K/32;
 
 float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_b, uint n_thread_index, float sums[THREAD_N_SIZE*THREAD_M_SIZE]) {
     uint a_indices[THREAD_M_SIZE];
@@ -64,7 +64,7 @@ float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_
     }
 
     uint start_ib = (k_b*ITER_K_SIZE%QK_K)/32;
-    uint end_ib = start_ib + (ITER_K_SIZE%QK_K)/32;
+    uint end_ib = start_ib + (ITER_K_SIZE%QK_K + 31)/32;
     for (uint ib = start_ib; ib < end_ib; ++ib) {
         uint16_t qhs[THREAD_M_SIZE];
         float dls[THREAD_M_SIZE];
@@ -75,7 +75,9 @@ float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_
             delta[m_i] = (qhs[m_i] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
         }
 
-        for (int l = 0; l < 4; ++l) {
+        uint start_l = (k_b*ITER_K_SIZE % 32)/8;
+        uint end_l = start_l + (ITER_K_SIZE % 32 + 7) / 8;
+        for (uint l = start_l; l < end_l; ++l) {
             uint8_t qss[THREAD_M_SIZE];
             uint16_t grids[THREAD_M_SIZE];
             for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
