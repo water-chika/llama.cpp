@@ -6574,8 +6574,8 @@ static const ggml_type other_types[] = {
 };
 
 static void add_mul_mat_tests(auto& test_cases) {
-    constexpr int thread_m = 4;
-    constexpr int thread_n = 4;
+    constexpr int thread_m = 8;
+    constexpr int thread_n = 8;
     constexpr int iter_k = 256/32;
     for (int ms : { thread_m, thread_m*2*8, thread_m*2*32, 4096}) {
     for (int ns : { thread_n, 8}) {
