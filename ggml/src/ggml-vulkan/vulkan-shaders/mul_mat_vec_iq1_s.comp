@@ -135,7 +135,30 @@ float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_
                 qss[m_i] = data_a[a_indices[m_i]].qs[ib*4+l];
                 grids[m_i] = iq1s_grid[qss[m_i] | (((qhs[m_i] >> 3*l) & 7) << 8)];
             }
-            for (int j = 0; j < 8; ++j) {
+            float cache_b[THREAD_N_SIZE*8];
+            float cache_a[THREAD_M_SIZE*8];
+            for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+                for (int j = 0; j < 8; ++j) {
+                    uint n = n_thread_index*THREAD_N_SIZE + n_i;
+                    cache_b[n_i*8 + j] = data_b[n*p.ncols + (k_b*ITER_K_SIZE/QK_K*QK_K+ib*32+l*8+j)];
+                }
+            }
+            for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                for (int j = 0; j < 8; ++j) {
+                    cache_a[m_i*8 + j] = (bitfieldExtract(grids[m_i], 2*j, 2) + delta[m_i])*dls[m_i];
+                }
+            }
+            for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+                    for (int j = 0; j < 8; ++j) {
+                        uint n = n_thread_index*THREAD_N_SIZE + n_i;
+                        float a = cache_a[m_i*8 + j];
+                        float b = cache_b[n_i*8 + j];
+                        sums[n_i*THREAD_M_SIZE + m_i] = fma(a, b, sums[n_i*THREAD_M_SIZE + m_i]);
+                    }
+                }
+            }
+            /*for (int j = 0; j < 8; ++j) {
                 float cache_b[THREAD_N_SIZE];
                 for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
                     uint n = n_thread_index*THREAD_N_SIZE + n_i;
@@ -153,7 +176,7 @@ float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_
                         sums[n_i*THREAD_M_SIZE + m_i] = fma(a, b, sums[n_i*THREAD_M_SIZE + m_i]);
                     }
                 }
-            }
+            }*/
         }
     }
     return sums;
