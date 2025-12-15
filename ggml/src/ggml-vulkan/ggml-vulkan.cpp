@@ -3539,6 +3539,9 @@ static void ggml_vk_load_shaders(vk_device& device) {
             rm_kq = 4;
             rm_stdq_int = 4;
         }
+        else {
+            rm_kq = 4;
+        }
     } else if (device->vendor_id == VK_VENDOR_ID_INTEL) {
         rm_stdq = 2;
         rm_stdq_int = 2;
@@ -3549,7 +3552,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
     // Ensure a subgroup size >= 16 is available
     const bool use_subgroups16 = use_subgroups && subgroup_min_size_16;
 
-    const uint32_t subgroup_size = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control && device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16) ? 16 : device->subgroup_size;
+    const uint32_t subgroup_size = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control && device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16) ? 16 : 
+        (device->vendor_id == VK_VENDOR_ID_AMD ? 32 : device->subgroup_size);
     const uint32_t subgroup_size16 = std::max(subgroup_size, 16u);
 
     const uint32_t force_subgroup_size = use_subgroups ? subgroup_size : 0;

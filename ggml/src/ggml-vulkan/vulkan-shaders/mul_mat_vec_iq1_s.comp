@@ -1,5 +1,11 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_clustered : enable
+#extension GL_KHR_shader_subgroup_shuffle : enable
+#extension GL_KHR_shader_subgroup_quad : enable
 
 #include "mul_mat_vec_base.glsl"
 
@@ -78,7 +84,7 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
     reduce_result(temp, d_offset, first_row, num_rows, tid);
 }
 
-void main() {
+void main_t() {
     const uint first_row = NUM_ROWS * (gl_WorkGroupID.x + gl_NumWorkGroups.x * gl_WorkGroupID.z);
 
     init_iq_shmem(gl_WorkGroupSize);
@@ -91,5 +97,88 @@ void main() {
             return;
         }
         compute_outputs(first_row, p.stride_d - first_row);
+    }
+}
+const uint QK_K = 256;
+
+const uint THREAD_N_SIZE = 8;
+const uint THREAD_M_SIZE = 8;
+const uint ITER_K_SIZE = QK_K/32;
+
+float[THREAD_N_SIZE*THREAD_M_SIZE] mul_iq1_s_data_b(uint m_thread_index, uint k_b, uint n_thread_index, float sums[THREAD_N_SIZE*THREAD_M_SIZE]) {
+    uint a_indices[THREAD_M_SIZE];
+    float ds[THREAD_M_SIZE];
+    for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+        uint m = m_thread_index*THREAD_M_SIZE + m_i;
+        a_indices[m_i] = m * (p.ncols/QK_K) + k_b*ITER_K_SIZE/QK_K;
+        ds[m_i] = data_a[a_indices[m_i]].d;
+    }
+
+    uint start_ib = (k_b*ITER_K_SIZE%QK_K)/32;
+    uint end_ib = start_ib + (ITER_K_SIZE%QK_K + 31)/32;
+    for (uint ib = start_ib; ib < end_ib; ++ib) {
+        uint16_t qhs[THREAD_M_SIZE];
+        float dls[THREAD_M_SIZE];
+        float delta[THREAD_M_SIZE];
+        for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+            qhs[m_i] = data_a[a_indices[m_i]].qh[ib];
+            dls[m_i] = ds[m_i] * (2*((qhs[m_i] >> 12) & 7) + 1);
+            delta[m_i] = (qhs[m_i] & 0x8000) != 0? -IQ1S_DELTA : IQ1S_DELTA;
+        }
+
+        uint start_l = (k_b*ITER_K_SIZE % 32)/8;
+        uint end_l = start_l + (ITER_K_SIZE % 32 + 7) / 8;
+        for (uint l = start_l; l < end_l; ++l) {
+            uint8_t qss[THREAD_M_SIZE];
+            uint16_t grids[THREAD_M_SIZE];
+            for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                qss[m_i] = data_a[a_indices[m_i]].qs[ib*4+l];
+                grids[m_i] = iq1s_grid[qss[m_i] | (((qhs[m_i] >> 3*l) & 7) << 8)];
+            }
+            for (int j = 0; j < 8; ++j) {
+                float cache_b[THREAD_N_SIZE];
+                for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+                    uint n = n_thread_index*THREAD_N_SIZE + n_i;
+                    cache_b[n_i] = data_b[n*p.ncols + (k_b*ITER_K_SIZE/QK_K*QK_K+ib*32+l*8+j)];
+                }
+                float cache_a[THREAD_M_SIZE];
+                for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                    cache_a[m_i] = (bitfieldExtract(grids[m_i], 2*j, 2) + delta[m_i])*dls[m_i];
+                }
+                for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+                    for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+                        uint n = n_thread_index*THREAD_N_SIZE + n_i;
+                        float a = cache_a[m_i];
+                        float b = cache_b[n_i];
+                        sums[n_i*THREAD_M_SIZE + m_i] = fma(a, b, sums[n_i*THREAD_M_SIZE + m_i]);
+                    }
+                }
+            }
+        }
+    }
+    return sums;
+}
+
+
+void main() {
+    init_iq_shmem(gl_WorkGroupSize);
+
+    uint m_thread_index = gl_WorkGroupID.x;
+    uint n_thread_index = gl_WorkGroupID.y;
+
+    float sums[THREAD_N_SIZE*THREAD_M_SIZE];
+    for (uint i = 0; i < THREAD_N_SIZE*THREAD_M_SIZE; i++) {
+            sums[i] = 0;
+    }
+    for (uint k_b = gl_SubgroupInvocationID; k_b < p.ncols/ITER_K_SIZE; k_b+=gl_SubgroupSize) {
+        sums = mul_iq1_s_data_b(m_thread_index, k_b, n_thread_index, sums);
+    }
+
+    for (uint n_i = 0; n_i < THREAD_N_SIZE; n_i++) {
+        for (uint m_i = 0; m_i < THREAD_M_SIZE; m_i++) {
+            uint n = n_thread_index*THREAD_N_SIZE + n_i;
+            uint m = m_thread_index*THREAD_M_SIZE + m_i;
+            data_d[n*p.stride_d + m] = subgroupAdd(sums[n_i*THREAD_M_SIZE + m_i]);
+        }
     }
 }
